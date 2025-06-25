@@ -1,0 +1,185 @@
+---
+title: "What Drives Student Success?  
+An Analysis of Portuguese Secondary-School Performance"
+author: "Will Marschall, Matthew Martin, Porter Jurica"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 2
+    theme: flatly
+---
+
+```{r setup, include=FALSE}
+# Set up R environment
+knitr::opts_chunk$set(echo = TRUE,
+                      message = FALSE,
+                      warning = FALSE,
+                      fig.retina = 2,
+                      fig.width = 7,
+                      fig.height = 4.5)
+
+# Load libraries
+library(tidyverse)    # ggplot2, dplyr, etc.
+library(GGally)       # ggpairs heatmaps
+library(janitor)      # clean_names
+library(broom)        # tidy model outputs
+library(caret)        # ML utilities
+library(cluster)      # clustering
+library(factoextra)   # PCA + clustering viz
+```
+
+# 1. Introduction
+
+Understanding the factors that shape achievement in secondary school is crucial for teachers, parents, and policy-makers. Using 649 student records from two Portuguese schools (math and Portuguese courses), we ask:
+
+- **Which demographic, family, and behavioral variables best predict the final grade (\( G3 \))?**
+- **Are there discernible student archetypes that transcend subjects?**
+
+We will blend classic statistical modeling (**multiple linear regression**) with unsupervised machine learning (**k-means clustering** + **PCA**) to build a holistic story.
+
+# 2. Data Import and Wrangling
+
+```{r}
+mat <- read.csv("student-mat.csv",   sep = ";") |> clean_names()
+por <- read.csv("student-por.csv",   sep = ";") |> clean_names()
+
+# Identify overlaps (382 students) on the 13 key columns suggested by UCI
+id_cols <- c("school","sex","age","address","famsize","pstatus",
+             "medu","fedu","mjob","fjob","reason","nursery","internet")
+both <- inner_join(mat, por, by = id_cols, suffix = c(".mat",".por"))
+
+# Combine unique rows to create a unified dataset
+mat$course <- "Math"
+por$course <- "Portuguese"
+stu <- bind_rows(mat, por) |> mutate(across(where(is.character), as.factor))
+glimpse(stu)
+```
+
+# 3. Exploratory Data Analysis
+
+## 3.1 Grade Distributions
+```{r}
+ggplot(stu, aes(g3, fill = course)) +
+  geom_histogram(binwidth = 1, alpha = 0.6, position = "identity") +
+  labs(title = "Final Grade Distribution by Course", x = "G3", y = "Count")
+```
+
+## 3.2 Correlations (numeric cols)
+```{r}
+num_cols <- stu |> select(where(is.numeric))
+ggcorr(num_cols, label = TRUE, label_size = 3, hjust = 1,
+       low = "steelblue1", high = "darkred", name = "ρ")
+```
+
+## 3.3 Boxplots: Lifestyle vs Grades
+
+```{r}
+ggplot(stu, aes(as.factor(studytime), g3)) +
+  geom_boxplot(fill = "slateblue2") +
+  labs(x = "Weekly Study Time (1 <2h … 4 >10h)", y = "Final Grade")
+```
+
+
+# 4. Predictive Modeling: Multiple Linear Regression
+
+We predict numeric G3 using variables available before the final exam (excluding G3 itself).
+
+```{r}
+reg_data <- stu |>
+  mutate(                       # 1. create pass/fail while G3 is still present
+    pass = factor(ifelse(g3 >= 10, "Pass", "Fail"))
+  ) |>
+  select(                       # 2. keep outcome and chosen predictors
+    g3, g1, g2, studytime, failures, absences,
+    sex, age, school, higher, activities, romantic,
+    dalc, walc, health, goout, traveltime
+  )
+```
+
+
+## 4.1 Train/Test Split
+
+```{r}
+set.seed(123)
+train_idx <- createDataPartition(reg_data$g3, p = 0.8, list = FALSE)
+train <- reg_data[train_idx, ]
+test  <- reg_data[-train_idx, ]
+```
+
+## 4.2 Fit Model
+
+```{r}
+lm_fit <- lm(g3 ~ ., data = train)
+summary(lm_fit)
+```
+
+## 4.3 Model Performance
+
+```{r}
+pred <- predict(lm_fit, test)
+rmse <- sqrt(mean((pred - test$g3)^2))
+rsq  <- cor(pred, test$g3)^2
+tibble(RMSE = rmse, R_squared = rsq)
+```
+
+## 4.4 Residual Diagnostics
+
+```{r}
+par(mfrow = c(1,2))
+plot(lm_fit, which = 1)   # Residuals vs Fitted
+plot(lm_fit, which = 2)   # QQ plot
+par(mfrow = c(1,1))
+```
+
+# 5. Unsupervised Learning: K-means Clustering
+
+```{r}
+clus_vars <- stu |>
+  select(studytime, failures, absences, goout, dalc, walc,
+         g3, health) |>
+  scale()
+set.seed(42)
+wss <- map_dbl(1:10, ~kmeans(clus_vars, .x, nstart = 25)$tot.withinss)
+
+qplot(1:10, wss, geom = "line") +
+  labs(x = "Clusters k", y = "Total Within-Cluster SS",
+       title = "Elbow Criterion") +
+  geom_vline(xintercept = 3, linetype = 2, col = "red")
+```
+
+Assuming k = 3 minimizes WSS drop.
+
+```{r}
+km3 <- kmeans(clus_vars, 3, nstart = 25)
+stu$cluster <- factor(km3$cluster)
+fviz_cluster(km3, data = clus_vars,
+             ellipse.type = "norm",
+             geom = "point", palette = "jco", ggtheme = theme_minimal())
+```
+
+## 5.1 Cluster Profiles
+
+```{r}
+stu |>
+  group_by(cluster) |>
+  summarise(across(c(g3, studytime, failures, absences, goout, dalc, walc),
+                   list(mean = mean, sd = sd), .names = "{col}_{fn}"),
+            count = n())
+```
+Storyline
+
+- **Cluster 1 (≈40 %): High achievers—low failures/absences, higher study time, minimal alcohol use.**
+- **Cluster 2 (≈35 %): Socially-active middlers—average grades, moderate outings, moderate alcohol.**
+- **Cluster 3 (≈25 %): At-risk group—multiple failures, high absences, low study time, highest alcohol intake.**
+
+# 6. Pass/Fail Classification
+
+```{r}
+log_data <- reg_data |>
+  mutate(pass = factor(ifelse(g3 >= 10, 1, 0)))
+log_fit <- glm(pass ~ g1 + g2 + studytime + failures + absences +
+                 dalc + walc + higher, data = log_data,
+               family = binomial)
+summary(log_fit)
+```
