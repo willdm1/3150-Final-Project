@@ -1,0 +1,249 @@
+---
+title: "What Drives Student Success?  
+An Analysis of Portuguese Secondary-School Performance"
+author: "Will Marschall, Matthew Martin, Porter Jurica"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 2
+    theme: flatly
+---
+
+```{r setup, include=FALSE}
+# Set up R environment
+knitr::opts_chunk$set(echo = TRUE,
+                      message = FALSE,
+                      warning = FALSE,
+                      fig.retina = 2,
+                      fig.width = 7,
+                      fig.height = 4.5)
+
+# Load libraries
+library(tidyverse)    # ggplot2, dplyr, etc.
+library(GGally)       # ggpairs heatmaps
+library(janitor)      # clean_names
+library(broom)        # tidy model outputs
+library(caret)        # ML utilities
+library(cluster)      # clustering
+library(factoextra)   # PCA + clustering viz
+```
+
+# 1. Introduction - Key Take-Aways
+
+Understanding the factors that shape achievement in secondary school is crucial for teachers, parents, and policy-makers. Using 649 student records from two Portuguese schools (math and Portuguese courses), we ask:
+
+- **Which demographic, family, and behavioral variables best predict the final grade (\( G3 \))?**
+- **Are there discernible student archetypes that transcend subjects?**
+
+We will blend classic statistical modeling (**multiple linear regression**) with unsupervised machine learning (**k-means clustering** + **PCA**) to build a holistic story.
+
+The combined dataset of 1,044 pupils offers a rare chance to disentangle academic, demographic, and lifestyle influences on Portuguese secondary-school achievement. Early-period grades (G1, G2) turn out to be overwhelmingly predictive of the final exam mark (G3), while most social or behavioural factors add only marginal explanatory power once prior grades are known. Nevertheless, unsupervised learning reveals three coherent “student archetypes” that can guide targeted interventions.
+
+# 2. Data Import and Wrangling - What We Built
+
+```{r}
+mat <- read.csv("student-mat.csv",   sep = ";") |> clean_names()
+por <- read.csv("student-por.csv",   sep = ";") |> clean_names()
+
+# Identify overlaps (382 students) on the 13 key columns suggested by UCI
+id_cols <- c("school","sex","age","address","famsize","pstatus",
+             "medu","fedu","mjob","fjob","reason","nursery","internet")
+both <- inner_join(mat, por, by = id_cols, suffix = c(".mat",".por"))
+
+# Combine unique rows to create a unified dataset
+mat$course <- "Math"
+por$course <- "Portuguese"
+stu <- bind_rows(mat, por) |> mutate(across(where(is.character), as.factor))
+glimpse(stu)
+```
+- **Two subject-specific files were merged into a unified 34-column frame, then factor-encoded where appropriate.**
+- **Duplicate records (382 overlaps) were identified but retained in the subject-specific files so that course effects can still be explored.**
+- **All transformations were limited to re-typing and non-destructive additions; no rows were dropped, preserving representativeness.**
+
+Implication: downstream models are trained on the full diversity of learners, and results are interpretable across both Mathematics and Portuguese courses.
+
+# 3. Exploratory Data Analysis
+
+## 3.1 Grade Distributions
+```{r}
+ggplot(stu, aes(g3, fill = course)) +
+  geom_histogram(binwidth = 1, alpha = 0.6, position = "identity") +
+  labs(title = "Final Grade Distribution by Course", x = "G3", y = "Count")
+```
+The histogram shows both subjects centred around 11–14 (out of 20), with a long left tail of low scorers. Mathematics exhibits slightly more dispersion and a thicker failure tail, hinting that subject-specific pedagogy or difficulty may matter.
+
+## 3.2 Correlations (numeric cols)
+```{r}
+num_cols <- stu |> select(where(is.numeric))
+ggcorr(num_cols, label = TRUE, label_size = 3, hjust = 1,
+       low = "steelblue1", high = "darkred", name = "ρ")
+```
+The heat-map confirms an almost linear progression:
+- **G1 → G2 (ρ ≈ 0.90) and G2 → G3 (ρ ≈ 0.90) dominate the matrix.**
+- **Behavioural variables (alcohol, health, going-out) correlate only weakly (|ρ| < 0.2) with grades.**
+- **Absences correlate negatively (ρ ≈ -0.10) but the magnitude is modest.**
+
+Interpretation: by the time students reach the final exam, earlier grades have already “locked in” the academic trajectory; ancillary factors have limited room to matter.
+
+## 3.3 Boxplots: Lifestyle vs Grades
+
+```{r}
+ggplot(stu, aes(as.factor(studytime), g3)) +
+  geom_boxplot(fill = "slateblue2") +
+  labs(x = "Weekly Study Time (1 <2h … 4 >10h)", y = "Final Grade")
+```
+Boxplots of studytime illustrate a clear monotone pattern: median G3 rises roughly two points between the <2 h and >10 h study brackets. However, variability within each group remains high, suggesting diminishing returns or confounding by prior ability.
+
+# 4. Predictive Modeling: Multiple Linear Regression
+
+We predict numeric G3 using variables available before the final exam (excluding G3 itself).
+
+```{r}
+reg_data <- stu |>
+  mutate(                       # 1. create pass/fail while G3 is still present
+    pass = factor(ifelse(g3 >= 10, "Pass", "Fail"))
+  ) |>
+  select(                       # 2. keep outcome and chosen predictors
+    g3, g1, g2, studytime, failures, absences,
+    sex, age, school, higher, activities, romantic,
+    dalc, walc, health, goout, traveltime
+  )
+```
+
+## 4.1 Train/Test Split
+
+```{r}
+set.seed(123)
+train_idx <- createDataPartition(reg_data$g3, p = 0.8, list = FALSE)
+train <- reg_data[train_idx, ]
+test  <- reg_data[-train_idx, ]
+```
+
+## 4.2 Fit Model
+
+```{r}
+lm_fit <- lm(g3 ~ ., data = train)
+summary(lm_fit)
+```
+- **Adjusted R² = 0.83: the model explains 83 % of variance in G3 on unseen test data (RMSE ≈ 1.46).**
+- **Significant predictors:**
+- **G2 (β = 0.96, p < 0.001).**
+– - **G1 (β = 0.14, p < 0.001).**
+- - **Failures (β = -0.25, p = 0.012) — each past failure offsets about a quarter of a grade point.**
+- - **Absences (β = 0.03, p < 0.001). The positive sign merely reflects that high-achievers can afford an occasional absence; causality is doubtful.**
+
+All demographic and lifestyle variables (sex, age, alcohol, activities, romance, etc.) lose significance once G1 and G2 are included.
+
+## 4.3 Model Performance
+
+```{r}
+pred <- predict(lm_fit, test)
+rmse <- sqrt(mean((pred - test$g3)^2))
+rsq  <- cor(pred, test$g3)^2
+tibble(RMSE = rmse, R_squared = rsq)
+```
+- **RMSE 1.46 points on a 0–20 scale is small in educational terms (≈ 7 % of the range).**
+- **Test-set R² 0.85 slightly exceeds training R², suggesting a stable, not over-fitted model.**
+
+## 4.4 Residual Diagnostics
+
+```{r}
+par(mfrow = c(1,2))
+plot(lm_fit, which = 1)   # Residuals vs Fitted
+plot(lm_fit, which = 2)   # QQ plot
+par(mfrow = c(1,1))
+```
+Residuals display mild funneling at the high-score end, but no severe heteroskedasticity. Q-Q plot is nearly straight until the extreme tails, where a handful of under-performers fall below expectations. Overall, assumptions hold.
+
+Implication: early-term intervention (before or during G2) is the single most effective lever for boosting final outcomes.
+
+# 5. Unsupervised Learning: K-means Clustering
+
+```{r}
+clus_vars <- stu |>
+  select(studytime, failures, absences, goout, dalc, walc,
+         g3, health) |>
+  scale()
+set.seed(42)
+wss <- map_dbl(1:10, ~kmeans(clus_vars, .x, nstart = 25)$tot.withinss)
+
+qplot(1:10, wss, geom = "line") +
+  labs(x = "Clusters k", y = "Total Within-Cluster SS",
+       title = "Elbow Criterion") +
+  geom_vline(xintercept = 3, linetype = 2, col = "red")
+```
+
+The elbow plot flattens sharply after k = 3, justifying a three-cluster solution.
+
+```{r}
+km3 <- kmeans(clus_vars, 3, nstart = 25)
+stu$cluster <- factor(km3$cluster)
+fviz_cluster(km3, data = clus_vars,
+             ellipse.type = "norm",
+             geom = "point", palette = "jco", ggtheme = theme_minimal())
+```
+
+## 5.1 Cluster Profiles
+
+```{r}
+library(dplyr)
+library(tibble)
+library(gt)
+
+# numeric summaries
+cluster_summary <- stu %>%                              
+  group_by(cluster) %>%                                  
+  summarise(
+    Size      = n(),
+    G3_mean   = mean(g3,  na.rm = TRUE),
+    failures  = mean(failures, na.rm = TRUE),
+    absences  = mean(absences, na.rm = TRUE),
+    studytime = mean(studytime, na.rm = TRUE),
+    goout     = mean(goout,    na.rm = TRUE),
+    Dalc      = mean(dalc,     na.rm = TRUE)
+  ) %>% 
+  mutate(Academic = sprintf("G3 ≈ %.1f", G3_mean))
+
+# interpretation table
+interpret <- tribble(
+  ~cluster, ~Behaviour,                                  ~`Risk Profile`,
+  1,        "Few failures, moderate studytime",          "“Solid performers” — above-average marks, balanced lifestyle",
+  2,        "Low studytime, highest go-out / alcohol",   "“Social butterflies” — pass threshold but vulnerable",
+  3,        "1.5 failures, high absences",               "“At-risk” — chronic under-achievement"
+) |>
+  mutate(cluster = factor(cluster, levels = levels(stu$cluster)))  # <- key fix
+
+# merge & format
+table_out <- cluster_summary %>%
+  select(cluster, Size, Academic) %>% 
+  left_join(interpret, by = "cluster") %>% 
+  arrange(cluster) %>% 
+  mutate(
+    Cluster = paste0(cluster, c(" (blue)", " (yellow)", " (grey)")[as.numeric(cluster)])
+  ) %>% 
+  select(Cluster, Size, Academic, Behaviour, `Risk Profile`)
+
+# render
+table_out |>
+  gt() |>
+  cols_align(align = "left") |>
+  tab_options(table.width = pct(100))
+```
+Actionable insight: focus remedial tutoring and attendance monitoring on Cluster 3, while soft-skill coaching (time-management) may benefit Cluster 2.
+
+# 6. Pass/Fail Classification
+
+```{r}
+log_data <- reg_data |>
+  mutate(pass = factor(ifelse(g3 >= 10, 1, 0)))
+log_fit <- glm(pass ~ g1 + g2 + studytime + failures + absences +
+                 dalc + walc + higher, data = log_data,
+               family = binomial)
+summary(log_fit)
+```
+- **Model deviance drops from 1,101 to 341 (Δ χ² = 760, p < 0.001), indicating strong explanatory power.**
+- **Odds ratios (exp β): a one-point increase in G2 multiplies the odds of passing by 5.05×; for G1 the factor is 1.56×.**
+- **Other predictors do not reach conventional significance; absences borders on relevance (p = 0.07, OR ≈ 0.97 per absence).**
+
+Pragmatic takeaway: simply flagging students with G2 < 10 would catch the vast majority of eventual failures, letting staff allocate resources efficiently.
