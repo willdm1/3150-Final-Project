@@ -1,5 +1,5 @@
 ---
-title: "What Drives Student Success?"  
+title: "What Drives Student Success?  
 An Analysis of Portuguese Secondary-School Performance"
 author: "Will Marschall, Matthew Martin, Porter Jurica"
 date: "`r Sys.Date()`"
