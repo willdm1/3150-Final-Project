@@ -247,3 +247,55 @@ summary(log_fit)
 - **Other predictors do not reach conventional significance; absences borders on relevance (p = 0.07, OR ≈ 0.97 per absence).**
 
 Pragmatic takeaway: simply flagging students with G2 < 10 would catch the vast majority of eventual failures, letting staff allocate resources efficiently.
+
+# 7  Robustness Check – Gradient-Boosted Trees *(planned)*
+
+Multiple linear regression explains over 80 % of the variance in `G3`, but it assumes additivity and linearity.  
+To make sure no important non-linear interactions remain hidden, we will fit a **gradient-boosted tree** (GBT) model in **Week 2**. Boosted ensembles sequentially fit shallow decision trees, allowing them to capture complex, high-order structure while retaining interpretability through variable-importance plots.
+
+The goals of this section are:
+
+1. **Confirm predictive stability.** If the GBT reduces RMSE materially (≥ 0.3 points) relative to OLS, that would signal meaningful non-linear effects worth exploring.  
+2. **Re-rank feature importance.** Tree-based permutation importance may reveal variables—attendance buckets, weekend alcohol use, or interaction terms—that linear coefficients underrate.  
+3. **Stress-test intervention rules.** If GBT agrees that `G2 < 10` is the dominant failure flag, our early-warning heuristic remains valid.
+
+> **Status:** Code scaffolded; results pending.  
+> **Owner:** Will (Data Lead, Week 2).
+
+```{r gradient_boosted_trees, eval = FALSE, message = FALSE, warning = FALSE}
+# ---- Gradient-Boosted Trees (GBM via caret) ---------------------------------
+library(caret)
+library(gbm)          # gradient boosting backend
+
+set.seed(321)
+
+# 1. Re-use train/test splits created earlier -------------------------------
+gbm_grid  <- expand.grid(interaction.depth = c(1, 3, 5),
+                         n.trees          = seq(100, 800, by = 100),
+                         shrinkage        = 0.05,
+                         n.minobsinnode   = 10)
+
+fit_ctrl  <- trainControl(method = "cv", number = 5,
+                          verboseIter = FALSE,
+                          allowParallel = TRUE)
+
+gbm_fit <- train(g3 ~ .,
+                 data        = train,
+                 method      = "gbm",
+                 trControl   = fit_ctrl,
+                 tuneGrid    = gbm_grid,
+                 metric      = "RMSE",
+                 verbose     = FALSE)
+gbm_fit
+# 2. Evaluate on hold-out set ----------------------------------------------
+gbm_pred <- predict(gbm_fit, test)
+gbm_pred
+gbm_rmse <- sqrt(mean((gbm_pred - test$g3)^2))
+gbm_rmse
+gbm_rsq  <- cor(gbm_pred, test$g3)^2
+gbm_rsq
+
+# 3. Save objects for later inspection --------------------------------------
+saveRDS(gbm_fit,  file = "gbm_fit.rds")
+saveRDS(gbm_pred, file = "Zgbm_pred_test.rds")
+```

@@ -1,0 +1,36 @@
+% ---------------------------------------------------------------
+%  PREAMBLE FOR IEEE-STYLE R MARKDOWN PDF (Pandoc ??? 2.19)
+% ---------------------------------------------------------------
+
+% ----------  Pandoc & pandoc-crossref support  ----------
+\usepackage{adjustbox}              % needed for \pandocbounded
+\usepackage{hyperref}
+\usepackage[capitalize,nameinlink]{cleveref}
+
+\makeatletter
+\def\maxwidth{\ifdim\Gin@nat@width>\linewidth\linewidth\else\Gin@nat@width\fi}
+\def\maxheight{\ifdim\Gin@nat@height>\textheight\textheight\else\Gin@nat@height\fi}
+\def\pandocbounded#1{%
+  \begin{adjustbox}{width=\maxwidth,height=\maxheight,keepaspectratio}#1\end{adjustbox}}
+\makeatother
+% ----------------------------------------------------------
+
+% ----------  Your original packages and macros  ----------
+% subfigures (IEEEtran recommends subcaption over subfig)
+\usepackage{subcaption}
+
+% graphics, incl. filenames with dots
+\usepackage{graphicx, grffile}
+
+% bold math
+\usepackage{bm}
+
+% colours
+\usepackage[usenames,dvipsnames]{xcolor}
+
+% math shortcuts
+\newcommand{\E}[1]{\operatorname{\mathbb{E}}\!\left[#1\right]}
+\newcommand{\Z}{\mathbb{Z}}
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\N}{\mathcal{N}}
+% ----------------------------------------------------------
