@@ -320,11 +320,14 @@ fviz_cluster(
 ```{r}
 library(gt)
 
-stu <- stu %>%
-  mutate(cluster = factor(km3$cluster)) 
+# ensure correct cluster labelling
+stu <- stu %>% mutate(cluster = factor(km3$cluster,
+                                       levels = c(1,2,3),
+                                       labels = c("Blue","Yellow","Grey")))
 
-cluster_summary <- stu %>% 
-  group_by(cluster) %>% 
+# summarise raw means, then join interpretation
+cluster_summary <- stu %>%
+  group_by(cluster) %>%
   summarise(
     Size        = n(),
     G3_mean     = mean(g3),
@@ -332,29 +335,24 @@ cluster_summary <- stu %>%
     Absences    = mean(absences),
     StudyTime   = mean(studytime),
     GoOut       = mean(goout),
-    WorkdayAlc  = mean(dalc),
-    WeekendAlc  = mean(walc),
+    Dalc        = mean(dalc),
+    Walc        = mean(walc),
     .groups = "drop"
   )
 
 interpret <- tribble(
-  ~cluster, ~Behaviour,                                   ~`Risk Profile`,
-  1,        "Moderate studytime, few failures",           "Solid performers",
-  2,        "Lowest studytime, highest social drinking",  "Social butterflies",
-  3,        "High failures & absences",                   "At-risk cohort"
-) %>% mutate(cluster = factor(cluster))
+  ~cluster, ~Behaviour,                               ~Risk,
+  "Blue",   "Many failures & absences",               "At-risk cohort",
+  "Yellow", "Lowest study time, highest social drinking", "Social butterflies",
+  "Grey",   "Moderate study time, few failures",      "Solid performers"
+)
 
-cluster_summary %>% 
-  left_join(interpret, by = "cluster") %>% 
-  arrange(cluster) %>% 
-  gt() %>% 
-  fmt_number(columns = where(is.numeric), decimals = 1) %>% 
-  cols_label(
-    G3_mean    = "Mean G3",
-    WorkdayAlc = "Dalc",
-    WeekendAlc = "Walc"
-  ) %>% 
-  tab_header(title = "Cluster Summary & Interpretation")
+cluster_summary %>%
+  left_join(interpret, by = "cluster") %>%
+  gt() %>%
+  fmt_number(where(is.numeric), decimals = 1) %>%
+  cols_label(G3_mean = "Mean G3") %>%
+  tab_header(title = "Cluster Summary and Interpretation")
 ```
 
 5·1 Variable set
